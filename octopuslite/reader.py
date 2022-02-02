@@ -9,6 +9,7 @@ from skimage import io
 from .transform import parse_transforms
 from .utils import (
     Channels,
+    crop_image,
     image_generator,
     parse_filename,
     remove_background,
@@ -33,11 +34,10 @@ class DaskOctopusLiteLoader:
         Transform matrix (as np.ndarray) to be applied to the image stack.
     remove_background : bool
         Use a estimated polynomial surface to remove uneven illumination.
-    remove_blank_frames : tuple or bool, optional
+    remove_blank_frames : tuple , optional
         An optional tuple of (minimum pixel value, maximum pixel value) that determines
         whether a frame is excluded on the premise that the mean of the image falls
-        outside of the pre-defined parameters. If no tuple is specified then the
-        default (min, max) of (2, 200) is used. Used to exclude frames where the
+        outside of the pre-defined parameters. Used to exclude frames where the
         light has not fired or has overexposed for some reason.
 
     Methods
@@ -72,7 +72,7 @@ class DaskOctopusLiteLoader:
         crop: Optional[tuple] = None,
         transforms: Optional[os.PathLike] = None,
         remove_background: bool = True,
-        remove_blank_frames: Union[tuple, bool] = None,
+        remove_blank_frames: Optional[tuple] = None,
     ):
         self.path = path
         self._files = {}
@@ -118,26 +118,29 @@ class DaskOctopusLiteLoader:
         image = io.imread(fn)
 
         if self._transformer is not None:
-            t = int(parse_filename(fn)["time"])
-            image = self._transformer(image, t)
+            # need to use index of file as some frames may have been removed
+            channel = parse_filename(fn)["channel"]
+            files = [
+                os.path.join(self.path, f)
+                for f in os.listdir(self.path)
+                if f"channel{str(channel.value).zfill(3)}" in f
+                and f.endswith((".tif", ".tiff"))
+            ]
+            files.sort(key=lambda f: parse_filename(f)["time"])
+            idx = files.index(fn)
+            image = self._transformer(image, idx)
 
         if self._crop is not None:
 
             assert isinstance(self._crop, tuple)
 
-            dims = image.ndim
-            shape = image.shape
             crop = np.array(self._crop).astype(np.int64)
 
             # check that we don't exceed any dimensions
-            assert all([crop[i] <= s for i, s in enumerate(shape)])
+            assert all([crop[i] <= s for i, s in enumerate(image.shape)])
 
-            # automagically build the slices for the array
-            cslice = lambda d: slice(
-                int((shape[d] - crop[d]) // 2), int((shape[d] - crop[d]) // 2 + crop[d])
-            )
-            crops = tuple([cslice(d) for d in range(dims)])
-            image = image[crops]
+            # crop the image
+            image = crop_image(image, crop)
 
         # check channel to see if label
         channel = parse_filename(fn)["channel"]
@@ -177,12 +180,10 @@ class DaskOctopusLiteLoader:
         channels = {k: [] for k in Channels}
 
         # remove blank frames and parse files
-        if self._remove_blank_frames is not None or False:
+        if self._remove_blank_frames is not None:
             if isinstance(self._remove_blank_frames, tuple):
                 max = np.max(self._remove_blank_frames)
                 min = np.min(self._remove_blank_frames)
-            else:
-                max, min = 200, 2
             blank_frames = []
             for f, image in zip(files, image_generator(files)):
                 if max < np.mean(image) or np.mean(image) < min:
