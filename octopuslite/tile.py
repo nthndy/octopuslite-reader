@@ -1,0 +1,294 @@
+import numpy as np
+from typing import Tuple, List, Dict, Union, Optional, Callable
+from dask.array.core import normalize_chunks
+import dask
+import dask.array as da
+import glob
+import os
+from skimage.io import imread
+from skimage.transform import AffineTransform
+from scipy.ndimage import affine_transform
+from pathlib import Path
+from shapely.geometry.base import BaseGeometry
+from shapely.geometry.polygon import Polygon
+from shapely.geometry import LineString
+from shapely.strtree import STRtree
+import pandas as pd
+from functools import partial
+
+def transform_tile_coord(shape: Tuple[int,int], affine_matrix: np.ndarray) -> np.ndarray:
+    """
+    returns the corner coordinates of a 2D array with shape shape
+    after applying the transform represented by affine_matrix.
+    From DaskFusion (https://github.com/VolkerH/DaskFusion/)
+    """
+    h, w = shape
+    # create homogeneous coordinates for corner points
+    baserect = np.array([[0, 0], [h, 0], [h, w], [0, w]])
+    augmented_baserect = np.concatenate(
+        (baserect, np.ones((baserect.shape[0], 1))), axis=1
+    )
+    # see where the corner points map to
+    transformed_rect = (affine_matrix @ augmented_baserect.T).T[:, :-1]
+    return transformed_rect
+
+def get_chunk_coord(shape: Tuple[int, int], chunk_size: Tuple[int, int]):
+    """Iterator that returns the bounding coordinates
+    for the individual chunks of a dask array of size
+    shape with chunk size chunk_size.
+
+
+    return_np_slice determines the output format. If True,
+    a numpy slice object is returned for each chunk, that can be used
+    directly to slice a dask array to return the desired chunk region.
+    If False, a Tuple of Tuples ((row_min, row_max+1),(col_min, col_max+1))
+    is returned.
+    From DaskFusion (https://github.com/VolkerH/DaskFusion/)
+
+    """
+    chunksy, chunksx = normalize_chunks(chunk_size, shape=shape)
+    y = 0
+    for cy in chunksy:
+        x = 0
+        for cx in chunksx:
+            yield ((y, y + cy), (x, x + cx))
+            x = x + cx
+        y = y + cy
+
+def numpy_shape_to_shapely(coords: np.ndarray, shape_type: str = "polygon") -> BaseGeometry:
+    """
+    Convert an individual shape represented as a numpy array of coordinates
+    to a shapely object
+    From DaskFusion (https://github.com/VolkerH/DaskFusion/)
+    """
+    _coords = coords[:, ::-1].copy()  # shapely has col,row order, numpy row,col
+    _coords[:, 1] *= -1  # axis direction flipped between shapely and napari
+    if shape_type in ("rectangle", "polygon", "ellipse"):
+        return Polygon(_coords)
+    elif shape_type in ("line", "path"):
+        return LineString(_coords)
+    else:
+        raise ValueError
+
+def get_rect_from_chunk_boundary(chunk_boundary):
+    """given a chunk boundary tuple, return a numpy
+    array that can be added as a shape to napari"
+    From DaskFusion (https://github.com/VolkerH/DaskFusion/)
+    """
+    ylim, xlim = chunk_boundary
+    miny, maxy = ylim[0], ylim[1] - 1
+    minx, maxx = xlim[0], xlim[1] - 1
+    return np.array([[miny, minx], [maxy, minx], [maxy, maxx], [miny, maxx]])
+
+def find_chunk_tile_intersections(
+    tiles_shapely: List["shapely.geometry.base.BaseGeometry"],
+    chunks_shapely: List["shapely.geometry.base.BaseGeometry"],
+) -> Dict[Tuple[int, int], Tuple[str, np.ndarray]]:
+    """
+    For each output array chunk, find the intersecting image tiles
+
+    Args:
+        tile_shapes: Contains the shapely objects corresponding to transformed image outlines.
+                    Each shape in tile_shapes must have a .fuse_info dictionary with
+                    keys "file" and "transform".
+        chunk_shapes: Contains the shapely objects representing dask array chunks.
+                    Each shape in chunk_shapes must have a .fuse_info dictionary with
+                    key "chunk_boundary", containing a tuple of chunk boundaries
+
+    Returns:
+         The chunk_to_tiles dictionary, which has the chunk anchor points as keys and tuples of
+         image file names and their corresponding affine transform matrix as values.
+    From DaskFusion (https://github.com/VolkerH/DaskFusion/)
+    """
+    chunk_to_tiles = {}
+    tile_tree = STRtree(tiles_shapely)
+
+    for chunk_shape in chunks_shapely:
+        chunk_boundary = chunk_shape.fuse_info["chunk_boundary"]
+        anchor_point = (chunk_boundary[0][0], chunk_boundary[1][0])
+        intersecting_tiles = tile_tree.query(chunk_shape)
+        chunk_to_tiles[anchor_point] = [
+            ((t.fuse_info["file"], t.fuse_info["transform"]))
+            for t in intersecting_tiles
+        ]
+    return chunk_to_tiles
+
+def fuse_func(
+    input_tile_info: Dict[
+        Tuple[int, int], List[Tuple[Union[str, Path, np.ndarray], np.ndarray]]
+    ],
+    imload_fn: Optional[Callable] = imread,
+    block_info=None,
+    dtype=np.uint16,
+) -> np.ndarray:
+
+    """
+    Fuses the tiles that intersect the current chunk of a dask array using maximum projection.
+
+    Pass this function to dask.array.map_blocks, after partial evaluation of the required
+    image_folder and (if needed) optional arguments.
+
+    Returns:
+        Array of chunk-shape containing max projection of tiles falling into chunk
+
+    From DaskFusion (https://github.com/VolkerH/DaskFusion/)
+    """
+    array_location = block_info[None]["array-location"]
+    # The anchor point is the key to the input_tile_info dictionary
+    anchor_point = (array_location[0][0], array_location[1][0])
+    chunk_shape = block_info[None]["chunk-shape"]
+    tiles_info = input_tile_info[anchor_point]
+    #print(f"Processing chunk at {anchor_point}")
+    fused = np.zeros(chunk_shape, dtype=dtype)
+    for image_representation, tile_affine in tiles_info:
+        if imload_fn is not None:
+            # When imload_fn is provided we assume we have been given strings representing files
+            tile_path = image_representation
+            im = imload_fn(tile_path)
+        else:
+            # Without imload function we assume images are passed
+            im = image_representation
+        shift = AffineTransform(translation=(-anchor_point[0], -anchor_point[1]))
+        tile_shifted = affine_transform(
+            im,
+            matrix=np.linalg.inv(shift.params @ tile_affine),
+            output_shape=chunk_shape,
+            cval=0,
+        )
+        # note that the dtype comversion here happens without scaling
+        # may want to use one of the skimage.img_as_* functions instead
+        stack = np.stack([fused, tile_shifted.astype(dtype)])
+        fused = np.max(stack, axis=0)
+    return fused
+
+FilePath = Union[Path, str]
+ArrayLike = Union[
+    np.ndarray, "dask.array.Array"
+]  # could add other array types if needed
+
+
+def load_image(
+    file: FilePath, transforms: List[Callable[[ArrayLike], ArrayLike]] = None
+) -> np.ndarray:
+    img = imread(file)
+    # if img.ndim == 2:
+    #    img = np.expand_dims(img, axis=0)
+    if transforms is not None:
+        for t in transforms:
+            img = t(img)
+    return img
+
+
+def stitch(load_transform_image:partial,
+    df: pd.DataFrame,
+    image_dir: os.PathLike,
+    time:str,
+    plane:str,
+    channel:str,
+    row:str,
+    col:str,
+    chunk_fraction:int)-> dask.array:
+    """
+    Function that takes DaskFusion core elements, defined above and uses them to
+    stitch a single-frame/slice mosaic image together.
+
+    Parameters
+    ----------
+    load_transform_image: partial function
+        Partial function that loads the image along with any transformations
+    df : pd.DataFrame
+        Pandas DataFrame containing all of the image metadata, taken from
+        utils.read_harmony_metadata
+    time : str
+        Time index, taken from utils.read_harmony_metadata dataframe output.
+    plane : str
+        Z index, taken from utils.read_harmony_metadata dataframe output.
+    channel : str
+        Channel index, taken from utils.read_harmony_metadata dataframe output.
+    row : str
+        Row index, taken from utils.read_harmony_metadata dataframe output.
+        Encodes the row of the FOV that you want to tile into a mosaic.
+    col : str
+        Column index, taken from utils.read_harmony_metadata dataframe output.
+        Encodes the row of the FOV that you want to tile into a mosaic.
+    chunk_fraction : str
+        How many Dask array chunks you want to divide the mosaic image into,
+        must be a square number as the images are symmetric.
+
+    Returns
+    -------
+    frame : dask.array
+        An stitched mosaic image for the given indices provided as the params,
+        but only actually stitched together when the image is calculated.
+    tiles_shifted_shapely: list of shapely.geometry.polygon.Polygon
+        Chunk information can be extracted to save out individual mask tiles.
+    """
+
+    ### extract metadata for this mosaic
+    filtered_df = df[(df['TimepointID'] == time)
+                   &(df['PlaneID'] == plane)
+                   &(df['ChannelID'] == channel)
+                   &(df['Row'] == row)
+                   &(df['Col'] == col)
+                    ]
+    ### extract filenames for subset
+    fns = filtered_df['URL']
+    ### build into full file path
+    fns = [glob.glob(os.path.join(image_dir, fn))[0] for fn in fns]
+    ### stack single slice mosaic into lazy array
+    sample = imread(fns[0])
+    lazy_arrays = [dask.delayed(imread)(fn) for fn in fns]
+    lazy_arrays = [da.from_delayed(x, shape=sample.shape, dtype=sample.dtype)
+                   for x in lazy_arrays]
+
+    ### define the function to fuse the image
+    _fuse_func=partial(fuse_func,
+                       imload_fn=load_transform_image,
+                       dtype=sample.dtype)
+
+    ### extract and convert coordinates from standard units into pixels
+    coords = filtered_df[["URL", "PositionX", "PositionY", "PositionZ",
+    "ImageResolutionX", "ImageResolutionY"]]
+    coords['PositionXPix'] = (coords['PositionX'].astype(float))/(coords['ImageResolutionX']).astype(float)
+    coords['PositionYPix'] = (coords['PositionY'].astype(float))/(coords['ImageResolutionY']).astype(float)
+    norm_coords = list(zip(coords['PositionXPix'], coords['PositionYPix']))
+    ### convert tile coordinates into transformation matrices
+    transforms = [AffineTransform(translation=stage_coord).params for stage_coord in norm_coords]
+    tiles = [transform_tile_coord(sample.shape, transform) for transform in transforms]
+    ### shift the tile coordinates to the origin
+    all_bboxes = np.vstack(tiles)
+    all_min = all_bboxes.min(axis=0)
+    all_max = all_bboxes.max(axis=0)
+    stitched_shape=tuple(np.ceil(all_max-all_min).astype(int))
+    shift_to_origin = AffineTransform(translation=-all_min)
+    transforms_with_shift = [t @ shift_to_origin.params for t in transforms]
+    shifted_tiles = [transform_tile_coord(sample.shape, t) for t in transforms_with_shift]
+    ### decide on chunk size as a fraction of total slice size
+    chunk_size = (6048/np.sqrt(chunk_fraction),6048/np.sqrt(chunk_fraction))
+    chunks = normalize_chunks(chunk_size,shape=tuple(stitched_shape))
+    ### check the maths adds up correctly (chunks fit into mosaic)
+    computed_shape = np.array(list(map(sum, chunks)))
+    assert np.all(np.array(stitched_shape) == computed_shape)
+    ### get boundary coords of chunks
+    chunk_boundaries = list(get_chunk_coord(stitched_shape, chunk_size))
+    ### use shapely to find the intersection of the chunks
+    tiles_shifted_shapely = [numpy_shape_to_shapely(s) for s in shifted_tiles]
+    chunk_shapes = list(map(get_rect_from_chunk_boundary, chunk_boundaries))
+    chunks_shapely = [numpy_shape_to_shapely(c) for c in chunk_shapes]
+    ### build dictionary of chunk shape data with filenames and transformations
+    for tile_shifted_shapely, file, transform in zip(tiles_shifted_shapely,
+                                         fns,
+                                         transforms_with_shift):
+        tile_shifted_shapely.fuse_info = {'file':file,
+                                          'transform':transform}
+    for chunk_shapely, chunk_boundary in zip(chunks_shapely,
+                                              chunk_boundaries):
+        chunk_shapely.fuse_info = {'chunk_boundary': chunk_boundary}
+    chunk_tiles = find_chunk_tile_intersections(tiles_shifted_shapely, chunks_shapely)
+    ### tile images together
+    frame = da.map_blocks(func=_fuse_func,
+             chunks=chunks,
+             input_tile_info=chunk_tiles,
+             dtype=sample.dtype)
+
+    return frame, tiles_shifted_shapely
