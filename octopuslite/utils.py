@@ -6,25 +6,28 @@ from typing import Tuple
 import numpy as np
 from scipy.ndimage import median_filter
 
-OCTOPUSLITE_FILEPATTERN = (
-    "img_channel(?P<channel>[0-9]+)_position(?P<position>[0-9]+)"
-    "_time(?P<time>[0-9]+)_z(?P<z>[0-9]+)"
-)
-
+import xml.etree.ElementTree as ET
+from tqdm.auto import tqdm
+import pandas as pd
 
 @enum.unique
 class Channels(enum.Enum):
-    BRIGHTFIELD = 0
-    GFP = 1
-    RFP = 2
-    IRFP = 3
-    PHASE = 4
-    WEIGHTS = 50
-    MASK_IRFP = 96
-    MASK_RFP = 97
-    MASK_GFP = 98
-    MASK = 99
-
+    CH0 = 0
+    CH1 = 1
+    CH2 = 2
+    CH3 = 3
+    CH4 = 4
+    CH5 = 5
+    CH6 = 6
+    CH7 = 7
+    MASK7 = 93
+    MASK6 = 94
+    MASK5 = 95
+    MASK4 = 96
+    MASK3 = 97
+    MASK2 = 98
+    MASK1 = 99
+    MASK0 = 100
 
 def remove_outliers(x: np.ndarray) -> np.ndarray:
     """Remove bright outlier pixels from an image.
@@ -138,32 +141,113 @@ def estimate_mask(x: np.ndarray) -> Tuple[slice]:
     return sh, sw
 
 
-def parse_filename(filename: os.PathLike) -> dict:
-    """Parse an OctopusLite filename and retreive metadata from the file.
+def parse_filename(filename: os.PathLike, fn_pattern = None) -> dict:
+    """Parse an OctopusHeavy filename and retreive metadata from the file.
 
     Parameters
     ----------
     filename : PathLike
         The full path to a file to parse.
+    fn_pattern : regex str
+        Optional rewriting of default filename pattern regex
 
     Returns
     -------
     metadata : dict
         A dictionary containing the parsed metadata.
     """
-    pth, filename = os.path.split(filename)
-    params = re.match(OCTOPUSLITE_FILEPATTERN, filename)
+    if fn_pattern:
+        OCTOPUSHEAVY_FILEPATTERN = fn_pattern
+    else:
+        ### default fn pattern
+        OCTOPUSHEAVY_FILEPATTERN = (
+            # should be
+            # TCZXY
+            "img_p(?P<position>[0-9]+)_t(?P<time>[0-9]+)_z(?P<z>[0-9]+)_c(?P<channel>[0-9]+)"
+        )
 
-    metadata = {
-        "filename": filename,
-        "channel": Channels(int(params.group("channel"))),
-        "time": params.group("time"),
-        "position": params.group("position"),
-        "z": params.group("z"),
-        # "timestamp": os.stat(filename).st_mtime,
-    }
+    pth, filename = os.path.split(filename)
+    params = re.match(OCTOPUSHEAVY_FILEPATTERN, filename)
+
+    # metadata = {
+    #     "filename": filename,
+    #     "channel": Channels(int(params.group("channel"))),
+    #     "time": params.group("time"),
+    #     "position": params.group("position"),
+    #     "z": params.group("z"),
+    #     # "timestamp": os.stat(filename).st_mtime,
+    # }
+
+    ### extract most of the metadata
+    metadata = params.groupdict()
+    ### convert the channel metadata from str to enumerated class
+    metadata['channel'] = Channels(int(metadata['channel']))
+    ### add filename to metadata
+    metadata['filename'] = filename
 
     return metadata
+
+def read_harmony_metadata(metadata_path: os.PathLike, AssayLayout = False
+    )-> pd.DataFrame:
+    """
+    Read the metadata from the Harmony software for the Opera Phenix microscope.
+    Takes an input of the path to the metadata .xml file.
+    Returns the metadata in a pandas dataframe format.
+    If AssayLayout is True then alternate xml format is anticipated, returning
+    information about the assay layout of the experiment rather than the general
+    organisation of image volume.
+    """
+    ### read xml metadata file
+    print('Reading metadata XML file...')
+    xml_data = open(metadata_path, 'r').read()
+    root = ET.XML(xml_data)
+    ### extraction procedure for image volume metadata
+    if not AssayLayout:
+        ### extract the metadata from the xml file
+        images_metadata = [child for child in root if "Images" in child.tag][0]
+        ### create an empty list for storing individual image metadata
+        metadata = list()
+        ### iterate over every image entry extracting the metadata
+        for image_metadata in tqdm(images_metadata, total = len(images_metadata),
+                                    desc = 'Extracting HarmonyV5 metadata'):
+            ### create empty dict to store single image metadata
+            single_image_dict = dict()
+            ### iterate over every metadata item in that image metadata
+            for item in image_metadata:
+                ### get column names from metadata
+                col = item.tag.replace('{http://www.perkinelmer.com/PEHH/HarmonyV5}','')
+                ### get metadata
+                entry = item.text
+                ### make dictionary out of metadata
+                single_image_dict[col] = entry
+            ### append that image metadata to list of all images
+            metadata.append(single_image_dict)
+    ### extraction procedure for assay layout metadata
+    if AssayLayout:
+        metadata = dict()
+        for branch in root:
+            for subbranch in branch:
+                if subbranch.text.strip() and subbranch.text.strip() != 'string':
+                    col_name = subbranch.text
+                    metadata[col_name] = dict()
+                for subsubbranch in subbranch:
+                    if 'Row' in subsubbranch.tag:
+                        row = int(subsubbranch.text)
+                    elif 'Col' in subsubbranch.tag and 'Color' not in subsubbranch.tag:
+                        col = int(subsubbranch.text)
+                    if 'Value' in subsubbranch.tag and subsubbranch.text != None:
+                        val = subsubbranch.text
+                        metadata[col_name][int(row), int(col)] = val
+
+    ### create a dataframe out of all metadata
+    df = pd.DataFrame(metadata)
+    ### rename columns if assay layout
+    # if AssayLayout:
+    #     columns = list(df.columns)
+    #     columns.insert(0, 'Row, Col')
+    #     df.rename(columns =)
+    print('Done!')
+    return df
 
 
 def crop_image(img: np.ndarray, crop: Tuple[int]) -> np.ndarray:
