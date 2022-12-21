@@ -17,10 +17,10 @@ from .utils import (
 )
 
 
-class DaskOctopusLiteLoader:
+class DaskOctopusHeavyLoader:
     """Load multidimensional image stacks using lazy loading.
 
-    A simple class to load OctopusLite data from a directory. Caches data once
+    A simple class to load OctopusHeavy data from a directory. Caches data once
     it is loaded to prevent excessive I/O to the data server. Can directly
     address different channels using the `Channels` enumerator.
 
@@ -34,6 +34,12 @@ class DaskOctopusLiteLoader:
         Transform matrix (as np.ndarray) to be applied to the image stack.
     remove_background : bool
         Use a estimated polynomial surface to remove uneven illumination.
+
+    fn_pattern: regex, optional
+        An optional string that redefines the default filepattern in utils.py
+    # redfine_channels: enumerated class, optional
+    #     An optional enumerated class that redefines the default channel
+    #     identities in utils.py
 
     Methods
     -------
@@ -56,7 +62,7 @@ class DaskOctopusLiteLoader:
 
     Usage
     -----
-    >>> octopus =  DaskOctopusLiteLoader('/path/to/your/data/')
+    >>> octopus =  DaskOctopusHeavyLoader('/path/to/your/data/')
     >>> gfp = octopus["GFP"]
     >>> gfp_filenames = octopus.files("GFP")
     """
@@ -67,6 +73,7 @@ class DaskOctopusLiteLoader:
         crop: Optional[tuple] = None,
         transforms: Optional[os.PathLike] = None,
         remove_background: bool = True,
+        fn_pattern: Optional[str] = None
     ):
         self.path = path
         self._files = {}
@@ -74,6 +81,7 @@ class DaskOctopusLiteLoader:
         self._crop = crop
         self._shape = ()
         self._remove_background = remove_background
+        self._fn_pattern = fn_pattern
 
         if self._crop is not None:
             print(f"Using cropping: {crop}")
@@ -115,9 +123,9 @@ class DaskOctopusLiteLoader:
 
         if self._transformer is not None:
             # need to use index of file as some frames may have been removed
-            channel = parse_filename(fn)["channel"]
+            channel = parse_filename(fn, self._fn_pattern)["channel"]
             files = self.files(channel.name)
-            files.sort(key=lambda f: parse_filename(f)["time"])
+            files.sort(key=lambda f: int(parse_filename(f, self._fn_pattern)["time"])) ## lack of leading zeros means ought to use int to sort
             idx = files.index(fn)
             image = self._transformer(image, idx)
 
@@ -134,7 +142,7 @@ class DaskOctopusLiteLoader:
             image = crop_image(image, crop)
 
         # check channel to see if label
-        channel = parse_filename(fn)["channel"]
+        channel = parse_filename(fn, self._fn_pattern)["channel"]
         # labels cannot be preprocessed so return here
         if channel.name.startswith(("MASK", "WEIGHTS")):
             return image
@@ -171,12 +179,13 @@ class DaskOctopusLiteLoader:
 
         # parse all the files
         for f in files:
-            channel = parse_filename(f)["channel"]
+            channel = parse_filename(f, self._fn_pattern)["channel"]
             channels[channel].append(f)
 
         # sort them by time
         for channel in channels.keys():
-            channels[channel].sort(key=lambda f: parse_filename(f)["time"])
+            channels[channel].sort(key=lambda f: parse_filename(f, self._fn_pattern)["z"])
+            channels[channel].sort(key=lambda f: parse_filename(f, self._fn_pattern)["time"])
 
         # set the output type
         dtype = np.float32 if self._remove_background else sample.dtype
