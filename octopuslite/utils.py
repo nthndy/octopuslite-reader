@@ -142,7 +142,7 @@ def estimate_mask(x: np.ndarray) -> Tuple[slice]:
 
 
 def parse_filename(filename: os.PathLike, fn_pattern = None) -> dict:
-    """Parse an OctopusHeavy filename and retreive metadata from the file.
+    """Parse an OctopusLite filename and retreive metadata from the file.
 
     Parameters
     ----------
@@ -157,17 +157,17 @@ def parse_filename(filename: os.PathLike, fn_pattern = None) -> dict:
         A dictionary containing the parsed metadata.
     """
     if fn_pattern:
-        OCTOPUSHEAVY_FILEPATTERN = fn_pattern
+        OCTOPUSLITE_FILEPATTERN = fn_pattern
     else:
         ### default fn pattern
-        OCTOPUSHEAVY_FILEPATTERN = (
+        OCTOPUSLITE_FILEPATTERN = (
             # should be
             # TCZXY
             "img_p(?P<position>[0-9]+)_t(?P<time>[0-9]+)_z(?P<z>[0-9]+)_c(?P<channel>[0-9]+)"
         )
 
     pth, filename = os.path.split(filename)
-    params = re.match(OCTOPUSHEAVY_FILEPATTERN, filename)
+    params = re.match(OCTOPUSLITE_FILEPATTERN, filename)
 
     # metadata = {
     #     "filename": filename,
@@ -187,22 +187,22 @@ def parse_filename(filename: os.PathLike, fn_pattern = None) -> dict:
 
     return metadata
 
-def read_harmony_metadata(metadata_path: os.PathLike, AssayLayout = False
+def read_harmony_metadata(metadata_path: os.PathLike, assay_layout = False
     )-> pd.DataFrame:
     """
     Read the metadata from the Harmony software for the Opera Phenix microscope.
     Takes an input of the path to the metadata .xml file.
     Returns the metadata in a pandas dataframe format.
-    If AssayLayout is True then alternate xml format is anticipated, returning
+    If assay_layout is True then alternate xml format is anticipated, returning
     information about the assay layout of the experiment rather than the general
     organisation of image volume.
     """
     ### read xml metadata file
     print('Reading metadata XML file...')
-    xml_data = open(metadata_path, 'r').read()
+    xml_data = open(metadata_path, 'r', encoding="utf-8-sig").read()
     root = ET.XML(xml_data)
     ### extraction procedure for image volume metadata
-    if not AssayLayout:
+    if not assay_layout:
         ### extract the metadata from the xml file
         images_metadata = [child for child in root if "Images" in child.tag][0]
         ### create an empty list for storing individual image metadata
@@ -223,7 +223,7 @@ def read_harmony_metadata(metadata_path: os.PathLike, AssayLayout = False
             ### append that image metadata to list of all images
             metadata.append(single_image_dict)
     ### extraction procedure for assay layout metadata
-    if AssayLayout:
+    if assay_layout:
         metadata = dict()
         for branch in root:
             for subbranch in branch:
@@ -242,11 +242,11 @@ def read_harmony_metadata(metadata_path: os.PathLike, AssayLayout = False
     ### create a dataframe out of all metadata
     df = pd.DataFrame(metadata)
     ### rename columns if assay layout
-    # if AssayLayout:
+    # if assay_layout:
     #     columns = list(df.columns)
     #     columns.insert(0, 'Row, Col')
     #     df.rename(columns =)
-    print('Done!')
+    print('Extracting metadata complete!')
     return df
 
 

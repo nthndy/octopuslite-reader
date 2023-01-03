@@ -17,10 +17,10 @@ from .utils import (
 )
 
 
-class DaskOctopusHeavyLoader:
+class DaskOctopusLiteLoader:
     """Load multidimensional image stacks using lazy loading.
 
-    A simple class to load OctopusHeavy data from a directory. Caches data once
+    A simple class to load OctopusLite data from a directory. Caches data once
     it is loaded to prevent excessive I/O to the data server. Can directly
     address different channels using the `Channels` enumerator.
 
@@ -62,7 +62,7 @@ class DaskOctopusHeavyLoader:
 
     Usage
     -----
-    >>> octopus =  DaskOctopusHeavyLoader('/path/to/your/data/')
+    >>> octopus =  DaskOctopusLiteLoader('/path/to/your/data/')
     >>> gfp = octopus["GFP"]
     >>> gfp_filenames = octopus.files("GFP")
     """

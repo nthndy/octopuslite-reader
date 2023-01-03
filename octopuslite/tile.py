@@ -5,7 +5,7 @@ import dask
 import dask.array as da
 import glob
 import os
-from skimage.io import imread
+from skimage.io import imread, imsave
 from skimage.transform import AffineTransform
 from scipy.ndimage import affine_transform
 from pathlib import Path
@@ -15,6 +15,62 @@ from shapely.geometry import LineString
 from shapely.strtree import STRtree
 import pandas as pd
 from functools import partial
+from .utils import read_harmony_metadata
+from tqdm.auto import tqdm
+
+def compile_mosaic(image_directory: str, metadata_file_path: str):
+    """
+    Uses various functions to compile a more user-friendly experience of tiling
+    a set of images that have been exported from the Harmony software.
+    """
+    fns = glob.glob(os.path.join(image_directory, '*.tiff'))
+    print(len(fns), 'image files found')
+    df = read_harmony_metadata(metadata_file_path)
+    ### extract some necessary information from the metadata before tiling
+    channel_IDs = df['ChannelID'].unique()
+    plane_IDs = df['PlaneID'].unique()
+    timepoint_IDs = df['TimepointID'].unique()
+    ### set a few parameters for the tiling approach
+    chunk_fraction = 9
+    load_transform_image = partial(load_image, transforms=[])
+    row_col_list = list()
+    for index, row in (df.iterrows()):
+        row_col_list.append(tuple((int(row['Row']), int(row['Col']))))
+    row_col_list = list(set(row_col_list))
+    for n, i in enumerate(row_col_list):
+        print('Position index and (row,column):', n, i)
+    ### get user input for desired row and column
+    print('Enter the row number you want:')
+    row = input()
+    print('Enter the column number you want:')
+    col = input()
+    print('Enter the output directory, or enter for Desktop output')
+    output_directory = input()
+    if output_directory == '':
+        from datetime import datetime
+        now = datetime.now() # current date and time
+        date_time = now.strftime("%m_%d_%Y")
+        output_directory = f'Images_{date_time}'
+        if not os.path.exists(output_directory):
+            os.mkdir(output_directory)
+    else:
+        if not os.path.exists(output_directory):
+            os.mkdir(output_directory)
+    for time in tqdm(timepoint_IDs, leave = False, desc = 'Timepoint progress'):
+        for channel in tqdm(channel_IDs, leave = False, desc = 'Channel progress'):
+            for plane in tqdm(plane_IDs, leave = False, desc = 'Z-slice progress'):
+                frame, chunk_info = stitch(load_transform_image,
+                                    df,
+                                    image_directory,
+                                    time,
+                                    plane,
+                                    channel,
+                                    row,
+                                    col,
+                                    chunk_fraction)
+                fn = f'image_t{str(time).zfill(6)}_c{str(channel).zfill(4)}_z{str(plane).zfill(4)}.tiff'
+                output_path = os.path.join(output_directory, fn)
+                imsave(output_path, frame)
 
 def transform_tile_coord(shape: Tuple[int,int], affine_matrix: np.ndarray) -> np.ndarray:
     """

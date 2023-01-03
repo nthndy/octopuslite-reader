@@ -1,4 +1,7 @@
 __pycache__
-*.ipynb
+*.tif
+*.tiff
+*.jpg
+*.png
 .DS_Store
 *.egg-info/
