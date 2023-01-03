@@ -7,6 +7,10 @@ A simple class to load OctopusLite data from a directory. Caches data once
 it is loaded to prevent excessive I/O to the data server. Can directly
 address different channels using the `Channels` enumerator.
 
+This branch (octopusheavy) has additional capacity for larger multidimensional
+image volumes as well as tiling mosaics of images together using elements from
+DaskFusion.
+
 Usage
 -----
 >>> images =  DaskOctopusLiteLoader(path = '/path/to/your/data/',
