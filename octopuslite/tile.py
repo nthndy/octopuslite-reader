@@ -9,6 +9,9 @@ from skimage.io import imread, imsave
 from skimage.transform import AffineTransform
 from scipy.ndimage import affine_transform
 from pathlib import Path
+import pkg_resources
+pkg_resources.require("Shapely<2.0.0")
+import shapely
 from shapely.geometry.base import BaseGeometry
 from shapely.geometry.polygon import Polygon
 from shapely.geometry import LineString
@@ -18,7 +21,20 @@ from functools import partial
 from .utils import read_harmony_metadata
 from tqdm.auto import tqdm
 
-def compile_mosaic(image_directory: str, metadata_file_path: str):
+### ignore error message for pandas new col assignment
+pd.options.mode.chained_assignment = None
+### ignore shapely depreciation warning
+from shapely.errors import ShapelyDeprecationWarning
+import warnings
+warnings.filterwarnings("ignore", category=ShapelyDeprecationWarning)
+
+"""
+Written in a rush by Nathan J. Day, depending mostly upon an expanded
+version of DaskFusion (https://github.com/VolkerH/DaskFusion/).
+I'm sorry I wish I had time to make this neater and more sophisticated!!!
+"""
+
+def compile_and_export_mosaic(image_directory: str, metadata_file_path: str):
     """
     Uses various functions to compile a more user-friendly experience of tiling
     a set of images that have been exported from the Harmony software.
@@ -67,10 +83,93 @@ def compile_mosaic(image_directory: str, metadata_file_path: str):
                                     channel,
                                     row,
                                     col,
-                                    chunk_fraction)
+                                    chunk_fraction,
+                                    mask = False)
                 fn = f'image_t{str(time).zfill(6)}_c{str(channel).zfill(4)}_z{str(plane).zfill(4)}.tiff'
                 output_path = os.path.join(output_directory, fn)
                 imsave(output_path, frame)
+
+def compile_mosaic(image_directory: str, metadata: pd.DataFrame, row: str,
+    col: str, transforms = None):
+    """
+    Uses various functions to compile a mosaic set of images that have been
+    exported from the Harmony software and returns a dask array that can be
+    lazily loaded and stitched together on the fly in napari
+    """
+    ### extract some necessary information from the metadata before tiling
+    channel_IDs = metadata['ChannelID'].unique()
+    plane_IDs = metadata['PlaneID'].unique()
+    timepoint_IDs = metadata['TimepointID'].unique()
+    ### set a few parameters for the tiling approach
+    chunk_fraction = 9
+    load_transform_image = partial(load_image, transforms=transforms)
+    ### clear empty arrays for organsing into dask arrays
+    t_stack = []
+    for time in tqdm(timepoint_IDs, leave = False, desc = 'Timepoint progress'):
+        c_stack = []
+        for channel in tqdm(channel_IDs, leave = False, desc = 'Channel progress'):
+            z_stack = []
+            for plane in tqdm(plane_IDs, leave = False, desc = 'Z-slice progress'):
+                frame, chunk_info = stitch(load_transform_image,
+                                    metadata,
+                                    image_directory,
+                                    time,
+                                    plane,
+                                    channel,
+                                    row,
+                                    col,
+                                    chunk_fraction,
+                                    mask = False)
+                ### collect stitched frames together into time stack
+                z_stack.append(frame)
+            ### stack channel series together (images)
+            c_stack.append(z_stack)
+        ### stack together timewise
+        t_stack.append(c_stack)
+    ### stack stitched dask arrays together into multidim image volumes
+    images = da.stack([da.stack(c_stack, axis = 0) for c_stack in t_stack])
+
+    return images
+
+def compile_mask_mosaic(image_directory: str, metadata: pd.DataFrame, row: str,
+    col: str, transforms = None):
+    """
+    Uses various functions to compile a mosaic set of images that have been
+    exported from the Harmony software and returns a dask array that can be
+    lazily loaded and stitched together on the fly in napari
+    """
+    ### extract some necessary information from the metadata before tiling
+    plane_IDs = metadata['PlaneID'].unique()
+    timepoint_IDs = metadata['TimepointID'].unique()
+    ### set a few parameters for the tiling approach
+    chunk_fraction = 9
+    load_transform_image = partial(load_image, transforms=transforms)
+    ### using a dummy input for channel as masks will be based off this atm
+    channel = '1'
+    ### clear empty arrays for organsing into dask arrays
+    t_stack = []
+    for time in tqdm(timepoint_IDs, leave = False, desc = 'Timepoint progress'):
+        z_stack = []
+        for plane in tqdm(plane_IDs, leave = False, desc = 'Z-slice progress'):
+            frame, chunk_info = stitch(load_transform_image,
+                                metadata,
+                                image_directory,
+                                time,
+                                plane,
+                                channel,
+                                row,
+                                col,
+                                chunk_fraction,
+                                mask = True)
+                ### collect stitched frames together into time stack
+            z_stack.append(frame)
+        ### stack together timewise
+        t_stack.append(z_stack)
+    ### stack stitched dask arrays together into multidim image volumes
+    masks = da.stack([da.stack(c_stack, axis = 0) for c_stack in t_stack])
+
+    return masks
+
 
 def transform_tile_coord(shape: Tuple[int,int], affine_matrix: np.ndarray) -> np.ndarray:
     """
@@ -243,7 +342,8 @@ def stitch(load_transform_image:partial,
     channel:str,
     row:str,
     col:str,
-    chunk_fraction:int)-> dask.array:
+    chunk_fraction:int,
+    mask:bool)-> dask.array:
     """
     Function that takes DaskFusion core elements, defined above and uses them to
     stitch a single-frame/slice mosaic image together.
@@ -270,6 +370,9 @@ def stitch(load_transform_image:partial,
     chunk_fraction : str
         How many Dask array chunks you want to divide the mosaic image into,
         must be a square number as the images are symmetric.
+    mask : bool
+        If true then the filenames are replaced with ch99 enumeration, which
+        corresponds to a mask image for the set time and plane
 
     Returns
     -------
@@ -289,6 +392,15 @@ def stitch(load_transform_image:partial,
                     ]
     ### extract filenames for subset
     fns = filtered_df['URL']
+    ### if you want to stitch the masks together then only extract the mask fns
+    if mask:
+        ### check that all masks are present
+        masks_exist = all([os.path.exists(os.path.join(image_dir, fn)) for fn in
+                            fns.str.replace('ch(\d+)', 'ch99')])
+        assert masks_exist == True, "Cannot find all corresponding masks"
+        print(f'List of images without masks: {fns}')
+        ### this is achieved by replacing the
+        fns = fns.str.replace('ch(\d+)', 'ch99')
     ### build into full file path
     fns = [glob.glob(os.path.join(image_dir, fn))[0] for fn in fns]
     ### stack single slice mosaic into lazy array
@@ -319,7 +431,7 @@ def stitch(load_transform_image:partial,
     shift_to_origin = AffineTransform(translation=-all_min)
     transforms_with_shift = [t @ shift_to_origin.params for t in transforms]
     shifted_tiles = [transform_tile_coord(sample.shape, t) for t in transforms_with_shift]
-    ### decide on chunk size as a fraction of total slice size
+    ### decide on chunk size as a fraction of total slice size TODO: auto size
     chunk_size = (6048/np.sqrt(chunk_fraction),6048/np.sqrt(chunk_fraction))
     chunks = normalize_chunks(chunk_size,shape=tuple(stitched_shape))
     ### check the maths adds up correctly (chunks fit into mosaic)

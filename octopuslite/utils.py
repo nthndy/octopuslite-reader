@@ -241,11 +241,14 @@ def read_harmony_metadata(metadata_path: os.PathLike, assay_layout = False
 
     ### create a dataframe out of all metadata
     df = pd.DataFrame(metadata)
-    ### rename columns if assay layout
-    # if assay_layout:
-    #     columns = list(df.columns)
-    #     columns.insert(0, 'Row, Col')
-    #     df.rename(columns =)
+
+    if assay_layout and mask_exist:
+        df['Missing masks'] = np.nan
+        for index, row in df.iterrows():
+            row, col = index
+            missing_mask_dict = do_masks_exist(metadata, row = row, col = col, print_output = False)
+            df.at[(row, col), 'Missing masks'] = missing_mask_dict[row, col]
+
     print('Extracting metadata complete!')
     return df
 
@@ -276,3 +279,52 @@ def crop_image(img: np.ndarray, crop: Tuple[int]) -> np.ndarray:
     img = img[crops]
 
     return img
+
+def do_masks_exist(metadata, row = None, col = None, print_output = True):
+    """
+    Iterates over all positions in experiment and checks if masks have been
+    created for each individual tiled image, returns missing mask info as dict()
+    If row and col are not defined then iterates over all found instances
+    """
+    missing_mask_dict = dict()
+    if None in [row, col]:
+        row_col_list = list()
+        for index, row in metadata.iterrows():
+            row_col_list.append(tuple((int(row['Row']), int(row['Col']))))
+        row_col_list = list(set(row_col_list))
+        for row, col in row_col_list:
+            channel == '1'
+            input_img_fns = metadata[(metadata['Row'] == str(row))
+                    &(metadata['Col'] == str(col))
+                    &(metadata['ChannelID'] == channel)]['URL']
+            corresponding_mask_fns = input_img_fns.str.replace('ch(\d+)', 'ch99')
+            # input_paths = [os.path.join(image_dir, fn) for fn in input_img_fns]
+            mask_paths = [os.path.join(image_dir, fn) for fn in corresponding_mask_fns]
+            masks_exist = all([os.path.exists(fn) for fn in mask_paths])
+            if not masks_exist:
+                missing_masks = [fn for fn in mask_paths if not os.path.exists(fn)]
+                print(f'{len(missing_masks)} masks are missing for row, col {row, col}')
+                missing_mask_dict[row, col] = len(missing_masks), missing_masks
+            else:
+                print(f'All masks present and correct for row, col {row, col}')
+                missing_mask_dict[row, col] = None
+        return missing_mask_dict
+    else:
+        channel == '1'
+        input_img_fns = metadata[(metadata['Row'] == str(row))
+                &(metadata['Col'] == str(col))
+                &(metadata['ChannelID'] == channel)]['URL']
+        corresponding_mask_fns = input_img_fns.str.replace('ch(\d+)', 'ch99')
+        # input_paths = [os.path.join(image_dir, fn) for fn in input_img_fns]
+        mask_paths = [os.path.join(image_dir, fn) for fn in corresponding_mask_fns]
+        masks_exist = all([os.path.exists(fn) for fn in mask_paths])
+        if not masks_exist:
+            missing_masks = [fn for fn in mask_paths if not os.path.exists(fn)]
+            if print_output == True:
+                print(f'{len(missing_masks)} masks are missing for row, col {row, col}')
+            missing_mask_dict[row, col] = len(missing_masks), missing_masks
+        else:
+            if print_output == True:
+                print(f'All masks present and correct for row, col {row, col}')
+            missing_mask_dict[row, col] = None
+        return missing_mask_dict
