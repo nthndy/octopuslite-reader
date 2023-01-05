@@ -116,8 +116,8 @@ def compile_mosaic(image_directory: str, metadata: pd.DataFrame, row: str,
                                     time,
                                     plane,
                                     channel,
-                                    row,
-                                    col,
+                                    str(row),
+                                    str(col),
                                     chunk_fraction,
                                     mask = False)
                 ### collect stitched frames together into time stack
@@ -157,8 +157,8 @@ def compile_mask_mosaic(image_directory: str, metadata: pd.DataFrame, row: str,
                                 time,
                                 plane,
                                 channel,
-                                row,
-                                col,
+                                str(row),
+                                str(col),
                                 chunk_fraction,
                                 mask = True)
                 ### collect stitched frames together into time stack
@@ -373,6 +373,7 @@ def stitch(load_transform_image:partial,
     mask : bool
         If true then the filenames are replaced with ch99 enumeration, which
         corresponds to a mask image for the set time and plane
+        THIS IS THE WRONG APPROACH FOR MASKS...
 
     Returns
     -------
@@ -396,11 +397,10 @@ def stitch(load_transform_image:partial,
     if mask:
         ### check that all masks are present
         masks_exist = all([os.path.exists(os.path.join(image_dir, fn)) for fn in
-                            fns.str.replace('ch(\d+)', 'ch99')])
+                            fns.str.replace(r'ch(\d+)', 'ch99', regex = True)])
         assert masks_exist == True, "Cannot find all corresponding masks"
-        print(f'List of images without masks: {fns}')
         ### this is achieved by replacing the
-        fns = fns.str.replace('ch(\d+)', 'ch99')
+        fns = fns.str.replace(r'ch(\d+)', 'ch99', regex = True)
     ### build into full file path
     fns = [glob.glob(os.path.join(image_dir, fn))[0] for fn in fns]
     ### stack single slice mosaic into lazy array
@@ -419,6 +419,10 @@ def stitch(load_transform_image:partial,
     "ImageResolutionX", "ImageResolutionY"]]
     coords['PositionXPix'] = (coords['PositionX'].astype(float))/(coords['ImageResolutionX']).astype(float)
     coords['PositionYPix'] = (coords['PositionY'].astype(float))/(coords['ImageResolutionY']).astype(float)
+    if mask:
+        ### needs more attn
+        coords['PositionXPix'] = coords['PositionXPix']*1.1
+        coords['PositionYPix'] = coords['PositionYPix']*1.1
     norm_coords = list(zip(coords['PositionXPix'], coords['PositionYPix']))
     ### convert tile coordinates into transformation matrices
     transforms = [AffineTransform(translation=stage_coord).params for stage_coord in norm_coords]
