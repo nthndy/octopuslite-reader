@@ -187,7 +187,8 @@ def parse_filename(filename: os.PathLike, fn_pattern = None) -> dict:
 
     return metadata
 
-def read_harmony_metadata(metadata_path: os.PathLike, assay_layout = False
+def read_harmony_metadata(metadata_path: os.PathLike, assay_layout = False,
+    mask_exist = False, image_dir = None, image_metadata = None
     )-> pd.DataFrame:
     """
     Read the metadata from the Harmony software for the Opera Phenix microscope.
@@ -196,6 +197,8 @@ def read_harmony_metadata(metadata_path: os.PathLike, assay_layout = False
     If assay_layout is True then alternate xml format is anticipated, returning
     information about the assay layout of the experiment rather than the general
     organisation of image volume.
+    If mask_exist is True then the existence of masks will be checked, which the
+    image directory (image_dir) is required with the image metadata (image_metadata)
     """
     ### read xml metadata file
     print('Reading metadata XML file...')
@@ -246,8 +249,10 @@ def read_harmony_metadata(metadata_path: os.PathLike, assay_layout = False
         df['Missing masks'] = np.nan
         for index, row in df.iterrows():
             row, col = index
-            missing_mask_dict = do_masks_exist(metadata, row = row, col = col, print_output = False)
+            missing_mask_dict = do_masks_exist(image_dir, image_metadata,
+                                row = row, col = col, print_output = False)
             df.at[(row, col), 'Missing masks'] = missing_mask_dict[row, col]
+            df = df.where(pd.notnull(df), None)
 
     print('Extracting metadata complete!')
     return df
@@ -280,7 +285,7 @@ def crop_image(img: np.ndarray, crop: Tuple[int]) -> np.ndarray:
 
     return img
 
-def do_masks_exist(metadata, row = None, col = None, print_output = True):
+def do_masks_exist(image_dir, metadata, row = None, col = None, print_output = True):
     """
     Iterates over all positions in experiment and checks if masks have been
     created for each individual tiled image, returns missing mask info as dict()
@@ -293,7 +298,7 @@ def do_masks_exist(metadata, row = None, col = None, print_output = True):
             row_col_list.append(tuple((int(row['Row']), int(row['Col']))))
         row_col_list = list(set(row_col_list))
         for row, col in row_col_list:
-            channel == '1'
+            channel = '1'
             input_img_fns = metadata[(metadata['Row'] == str(row))
                     &(metadata['Col'] == str(col))
                     &(metadata['ChannelID'] == channel)]['URL']
@@ -310,7 +315,7 @@ def do_masks_exist(metadata, row = None, col = None, print_output = True):
                 missing_mask_dict[row, col] = None
         return missing_mask_dict
     else:
-        channel == '1'
+        channel = '1'
         input_img_fns = metadata[(metadata['Row'] == str(row))
                 &(metadata['Col'] == str(col))
                 &(metadata['ChannelID'] == channel)]['URL']
