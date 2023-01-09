@@ -174,12 +174,12 @@ def compile_mosaic(
                  if set_plane == None else [set_plane])
     timepoint_IDs = (metadata['TimepointID'].unique()
                  if set_time == None else [set_time])
-    ### set a few parameters for the tiling approach
+    ### set a few parameters for the tiling approach, remove this hardcoded val
     chunk_fraction = 9
     load_transform_image = partial(load_image, transforms=input_transforms)
     ### stitch the images together over all defined axis
     ### but do so in using dask delayed
-    images = [dask.delayed(tile.stitch)(load_transform_image,
+    images = [dask.delayed(stitch)(load_transform_image,
                                         metadata,
                                         image_directory,
                                         time,
@@ -193,6 +193,8 @@ def compile_mosaic(
                         for plane in tqdm(plane_IDs, leave = False)
                         for channel in tqdm(channel_IDs, leave = False)
                         for time in tqdm(timepoint_IDs, leave = False)]
+    ### need to remove hardcoded values, perhaps by returning shapely info from
+    ### stitch function
     ### create a series of dask arrays out of the delayed funcs
     images = [da.from_delayed(frame,
                     shape = (6048, 6048),
@@ -560,11 +562,12 @@ def stitch(load_transform_image:partial,
     all_min = all_bboxes.min(axis=0)
     all_max = all_bboxes.max(axis=0)
     stitched_shape=tuple(np.ceil(all_max-all_min).astype(int))
+    print(stitched_shape)
     shift_to_origin = AffineTransform(translation=-all_min)
     transforms_with_shift = [t @ shift_to_origin.params for t in transforms]
     shifted_tiles = [transform_tile_coord(sample.shape, t) for t in transforms_with_shift]
-    ### decide on chunk size as a fraction of total slice size TODO: auto size
-    chunk_size = (6048/np.sqrt(chunk_fraction),6048/np.sqrt(chunk_fraction))
+    ### decide on chunk size as a fraction of total slice size TODO: auto size, assuming symmetric atm
+    chunk_size = (stitched_shape[0]/np.sqrt(chunk_fraction),stitched_shape[0]/np.sqrt(chunk_fraction))
     chunks = normalize_chunks(chunk_size,shape=tuple(stitched_shape))
     ### check the maths adds up correctly (chunks fit into mosaic)
     computed_shape = np.array(list(map(sum, chunks)))
