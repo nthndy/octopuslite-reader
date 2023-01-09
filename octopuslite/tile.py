@@ -39,6 +39,86 @@ version of DaskFusion (https://github.com/VolkerH/DaskFusion/).
 I'm sorry I wish I had time to make this neater and more sophisticated!!!
 Need to make into a class but need to learn more about that first?
 """
+def legacy_compile_mosaic(
+    image_directory: os.PathLike,
+    metadata: pd.DataFrame,
+    row: int,
+    col: int,
+    input_transforms: List[Callable[[ArrayLike], ArrayLike]] = None,
+    set_plane = None,
+    set_channel = None,
+    set_time = None
+    )->dask.array:
+
+    """
+    Uses the LEGACY/OLDER stitch function to compile a mosaic set of images that have been
+    exported and fragmented from the Harmony software and returns a dask array
+    that can be lazily loaded and stitched together on the fly.
+    Latest iteration is attempting to use dask delay to improve speed of
+    precompilation (WIP),
+
+    Parameters
+    ----------
+    image_directory : os.PathLike
+        Location of fragmented images, typically located in a folder named
+        "/Experiment_ID/Images" that was exported form the Harmony software.
+    metadata : pd.DataFrame
+        pd.DataFrame representation of the experiment metadata file, typically
+        located in a file called "/Experiment_ID/Index.idx.xml". This metadata
+        can be extracted and formatted using the `read_harmony_metadata`
+        function in `utils.py`.
+    row : str
+        Each experiment will be conducted over a multiwell plate, so the row and
+        column of the desired well needs to be defined as a string input. This
+        input defines the row of choice.
+    col : str
+        Corresponding column of choice.
+    input_transforms : List[Callable[[ArrayLike], ArrayLike]]
+        Optional pre-processing transformations that can be applied to each
+        image, such as a crop, a transpose or a background removal.
+    set_plane : int
+        Optional input to define a single plane to compile. If left blank then
+        mosaic will be compiled over all planes available.
+    set_channel : int
+        Optional input to define a single channel to compile. If left blank then
+        mosaic will be compiled over all channels available.
+    set_time : int
+        Optional input to define a single frame to compile. If left blank then
+        mosaic will be compiled over all frames available.
+    """
+    ### extract some necessary information from the metadata before tiling
+    channel_IDs = (metadata['ChannelID'].unique()
+               if set_channel == None else [set_channel])
+    plane_IDs = (metadata['PlaneID'].unique()
+                 if set_plane == None else [set_plane])
+    timepoint_IDs = (metadata['TimepointID'].unique()
+                 if set_time == None else [set_time])
+    ### set a few parameters for the tiling approach
+    chunk_fraction = 9
+    load_transform_image = partial(load_image, transforms=input_transforms)
+    ### stitch the images together over all defined axis
+    images = [stitch(load_transform_image,
+                                metadata,
+                                image_directory,
+                                time,
+                                plane,
+                                channel,
+                                str(row),
+                                str(col),
+                                chunk_fraction,
+                                mask = False)[0]
+                for plane in tqdm(plane_IDs, leave = False)
+                for channel in tqdm(channel_IDs, leave = False)
+                for time in tqdm(timepoint_IDs, leave = False)]
+    ### stack them together
+    images = da.stack(images, axis = 0)
+    ### reshape them according to TCZXY
+    images = images.reshape((len(timepoint_IDs),
+                             len(channel_IDs),
+                             len(plane_IDs),
+                             images.shape[-2], images.shape[-1]))
+
+    return images
 
 def compile_mosaic(
     image_directory: os.PathLike,
