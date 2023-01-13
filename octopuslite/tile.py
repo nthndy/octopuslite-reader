@@ -458,6 +458,9 @@ def load_image(
     file: FilePath, transforms: List[Callable[[ArrayLike], ArrayLike]] = None
 ) -> np.ndarray:
     img = imread(file)
+    #### TO-DO remove this hacky fix
+    #### WHY IS THIS NECESSARY FOR PROPER TILING
+    img = np.rot90(img, k=3)
     # if img.ndim == 2:
     #    img = np.expand_dims(img, axis=0)
     if transforms is not None:
@@ -594,5 +597,9 @@ def stitch(load_transform_image:partial,
              chunks=chunks,
              input_tile_info=chunk_tiles,
              dtype=sample.dtype)
+
+    #### TO-DO remove this hacky fix
+    #### WHY IS THIS NECESSARY FOR PROPER TILING
+    frame = np.rot90(frame)
 
     return frame, tiles_shifted_shapely
