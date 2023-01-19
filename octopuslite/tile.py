@@ -157,16 +157,35 @@ def compile_mosaic(
     input_transforms : List[Callable[[ArrayLike], ArrayLike]]
         Optional pre-processing transformations that can be applied to each
         image, such as a crop, a transpose or a background removal.
-    set_plane : int
+    set_plane : int or str
         Optional input to define a single plane to compile. If left blank then
         mosaic will be compiled over all planes available.
+        If a string input of 'max_proj' or 'sum_proj' is provided then images
+        will be either taken as a max pixel value projection or summed
+        projection over the Z axis.
     set_channel : int
         Optional input to define a single channel to compile. If left blank then
         mosaic will be compiled over all channels available.
     set_time : int
         Optional input to define a single frame to compile. If left blank then
         mosaic will be compiled over all frames available.
+    projection : str
+        Specify a string input of 'max_proj' or 'sum_proj' if you want to
+        conduct a projection along the
     """
+    ### check if projection is to be conducted over Z
+    if type(set_plane) == str:
+        ## if set_plane is str, then specify which type of projection to
+        ## to conduct, also check that input type is accepted
+        if set_plane not in ['max_proj', 'sum_proj']:
+                raise TypeError("""Please specify either 'max_proj' or 'sum_proj'
+                                if you want a projection over Z axis,
+                                else specify 'set_plane' as an integer""")
+        projection = set_plane
+        set_plane = None
+    else:
+        projection = None
+
     ### extract some necessary information from the metadata before tiling
     channel_IDs = (metadata['ChannelID'].unique()
                if set_channel == None else [set_channel])
@@ -211,6 +230,11 @@ def compile_mosaic(
                              len(channel_IDs),
                              len(plane_IDs),
                              images.shape[-2], images.shape[-1]))
+    ### conduct projection according to specified type
+    if projection == 'max_proj':
+         images = np.max(images, axis = 2)
+    if projection == 'sum_proj':
+         images = np.sum(images, axis = 2)
 
     return images
 
@@ -457,7 +481,11 @@ def fuse_func(
 def load_image(
     file: FilePath, transforms: List[Callable[[ArrayLike], ArrayLike]] = None
 ) -> np.ndarray:
-    img = imread(file)
+    try:
+        img = imread(file)
+    except Exception as e:
+        raise Exception(e)
+        raise Exception(f'Could not load file: {file}')
     #### TO-DO remove this hacky fix
     #### WHY IS THIS NECESSARY FOR PROPER TILING
     img = np.rot90(img, k=3)
